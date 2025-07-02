@@ -1,6 +1,6 @@
 # Apple Music MCP Server
 
-A Model Context Protocol (MCP) server that provides LLMs with comprehensive access to Apple Music libraries.
+A Model Context Protocol (MCP) server that provides LLMs with comprehensive access to Apple Music libraries through OAuth 2.1 + MusicKit authentication.
 
 ## Overview
 
@@ -15,9 +15,10 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 ## Architecture
 
 - **Runtime**: Python 3.11+ with FastAPI
-- **Authentication**: JWT tokens for Apple Music API
+- **Authentication**: OAuth 2.1 + MusicKit hybrid authentication
+- **Database**: SQLite for OAuth state management
 - **Deployment**: Docker containers
-- **Direct API**: No local database - queries Apple Music directly
+- **Direct API**: Queries Apple Music API directly (no music data caching)
 
 ## MCP Tools Available
 
@@ -49,9 +50,15 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 
 2. **Add Apple Music credentials to `.env`**
    ```bash
+   # Apple Music API
    APPLE_TEAM_ID=your_team_id_here
    APPLE_KEY_ID=your_key_id_here
    APPLE_PRIVATE_KEY_PATH=/keys/AuthKey.p8
+   
+   # OAuth Configuration
+   OAUTH_BASE_URL=http://localhost:3600
+   JWT_SECRET_KEY=your_strong_random_secret_key
+   TOKEN_ENCRYPTION_KEY=your_fernet_encryption_key
    ```
 
 3. **Place your Apple Music private key**
@@ -62,66 +69,95 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 
 ### Running
 
-**Using Docker:**
-```bash
-# Build image
-docker build -f docker/Dockerfile -t apple-music-mcp .
-
-# Run container
-docker run --rm -p 8080:8080 --env-file .env \
-  -v $(pwd)/docker/keys:/keys:ro apple-music-mcp
-```
-
-**Using Docker Compose:**
+**Using Docker Compose (Recommended):**
 ```bash
 # From docker directory
 cd docker
 docker-compose up -d
 ```
 
+**Using Docker:**
+```bash
+# Build image
+docker build -f docker/Dockerfile -t apple-music-mcp .
+
+# Run container
+docker run --rm -p 3600:3600 --env-file .env \
+  -v $(pwd)/docker/keys:/keys:ro apple-music-mcp
+```
+
 ### Verify Installation
 ```bash
 # Check health
-curl http://localhost:8080/health
+curl http://localhost:3600/health
 
 # Expected response:
 # {"status":"healthy","timestamp":"...","version":"1.0.0","services":{"server":"online"}}
 ```
 
-## API Endpoints
+## Authentication Flow
 
-### Core Endpoints
-- `GET /` - Server info
+### OAuth 2.1 + MusicKit Hybrid
+1. **Client Registration**: MCP clients dynamically register via `/oauth/register`
+2. **Authorization**: Client redirects to `/oauth/authorize`
+3. **MusicKit Authentication**: User authenticates through Apple's MusicKit web interface
+4. **Token Exchange**: Client exchanges authorization code for access token at `/oauth/token`
+5. **MCP Access**: Client uses Bearer token for authenticated MCP tool calls
+
+### Available Endpoints
+- `GET /.well-known/oauth-authorization-server` - OAuth server metadata
+- `POST /oauth/register` - Dynamic client registration
+- `GET /oauth/authorize` - Authorization endpoint  
+- `POST /oauth/token` - Token exchange
+- `GET /mcp` - MCP server info
+- `POST /mcp` - MCP tool calls
 - `GET /health` - Health check
-
-### Apple Music Integration
-The server exposes MCP tools rather than direct REST endpoints. Tools are called through the MCP protocol by compatible LLM clients.
 
 ## MCP Integration
 
-Configure your MCP-compatible LLM client to connect to `http://localhost:8080` for Apple Music functionality.
+### Integration
+1. Add custom integration in your LLM platform (e.g., Anthropic Claude)
+2. Use server URL: `http://localhost:3600` (or your deployed URL)
+3. Complete OAuth flow when prompted
+4. Access Apple Music tools through Claude conversations
 
-Example tool usage:
-- Search for songs: `search_songs(query="Taylor Swift Love Story")`
-- Get library stats: `get_library_stats()`
-- Rate a song: `rate_song(song_id="123456789", rating=5)`
+### Example Usage
+```
+User: "Search for songs by Daft Punk"
+Claude: Uses search_songs tool → Returns Apple Music catalog results
+
+User: "What's in my music library?"  
+Claude: Uses get_library_stats tool → Returns library statistics
+
+User: "Rate this song 5 stars"
+Claude: Uses rate_song tool → Updates song rating in Apple Music
+```
 
 ## Status
 
-✅ **Basic functionality implemented**
-- FastAPI server with health checks
-- Apple Music API client with JWT authentication
-- MCP tool definitions for all major operations
-- Docker deployment ready
+✅ **Production Ready**
+- ✅ FastAPI server with health checks
+- ✅ Apple Music API client with JWT authentication  
+- ✅ OAuth 2.1 server with dynamic client registration
+- ✅ MusicKit authentication integration
+- ✅ All 7 MCP tools implemented and tested
+- ✅ Authorization header extraction and user token handling
+- ✅ Docker deployment with environment configuration
+- ✅ HTTP client lifecycle management
 
-🚧 **TODO for full functionality:**
-- User token authentication flow
-- Error handling and validation
-- Rate limiting implementation
+🎯 **Core Features Working**
+- Catalog search operations (no auth required)
+- OAuth 2.1 authentication flow end-to-end
+- MusicKit user authentication via web interface  
+- Bearer token extraction for authenticated operations
+- Library operations (requires user authentication)
 
 ## Security
 
-- JWT token authentication with Apple Music API
-- Non-root Docker container execution
-- Environment-based configuration
-- Read-only key volume mounts
+- ✅ OAuth 2.1 with PKCE for secure authentication
+- ✅ JWT token authentication with Apple Music API
+- ✅ MusicKit user token encryption at rest
+- ✅ Non-root Docker container execution
+- ✅ Environment-based configuration
+- ✅ Read-only key volume mounts
+- ✅ CORS configuration for web integration

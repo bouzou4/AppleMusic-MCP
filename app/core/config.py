@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings
+from typing import Optional
 
 class Settings(BaseSettings):
     # Apple Music API
@@ -6,15 +7,15 @@ class Settings(BaseSettings):
     apple_key_id: str  
     apple_private_key_path: str = "/keys/AuthKey.p8"
     
-    # Apple Music OAuth (for user tokens)
-    apple_client_id: str
-    apple_client_secret: str
     
     # Server Configuration
     server_host: str = "0.0.0.0"
-    server_port: int = 8080
+    server_port: int = 3600
     debug: bool = False
-    oauth_base_url: str = "http://localhost:8080"
+    @property
+    def oauth_base_url(self) -> str:
+        """Get OAuth base URL, defaulting to server host:port"""
+        return f"http://localhost:{self.server_port}"
     
     # Database
     database_url: str = "sqlite:///./data/apple_music.db"
