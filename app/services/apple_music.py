@@ -92,7 +92,14 @@ class AppleMusicClient:
     
     async def search_songs(self, query: str, limit: int = 10, country: str = "US") -> List[Dict[str, Any]]:
         """Search for songs and return simplified track list for LLM usage"""
-        search_results = await self.search_catalog(query, types="songs", limit=limit, country=country)
+        print(f"DEBUG: AppleMusicClient.search_songs called with query='{query}', limit={limit}")
+        
+        try:
+            search_results = await self.search_catalog(query, types="songs", limit=limit, country=country)
+            print(f"DEBUG: search_catalog returned: {type(search_results)}")
+        except Exception as e:
+            print(f"ERROR: search_catalog failed - {type(e).__name__}: {e}")
+            raise
         
         songs = search_results.get("results", {}).get("songs", {}).get("data", [])
         

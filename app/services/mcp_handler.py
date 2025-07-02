@@ -93,26 +93,41 @@ class MCPHandler:
     
     async def handle_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Handle MCP tool calls"""
-        async with self.apple_client as client:
-            if tool_name == "search_songs":
-                return await self._search_songs(client, arguments)
-            elif tool_name == "get_library_stats":
-                return await self._get_library_stats(client, arguments)
-            elif tool_name == "get_recently_played":
-                return await self._get_recently_played(client, arguments)
-            elif tool_name == "search_library":
-                return await self._search_library(client, arguments)
-            elif tool_name == "rate_song":
-                return await self._rate_song(client, arguments)
-            elif tool_name == "create_playlist":
-                return await self._create_playlist(client, arguments)
-            elif tool_name == "add_to_library":
-                return await self._add_to_library(client, arguments)
-            else:
-                raise ValueError(f"Unknown tool: {tool_name}")
+        print(f"DEBUG: MCPHandler.handle_tool_call - tool: {tool_name}, args: {arguments}")
+        
+        try:
+            async with self.apple_client as client:
+                print(f"DEBUG: Apple Music client context established")
+                if tool_name == "search_songs":
+                    return await self._search_songs(client, arguments)
+                elif tool_name == "get_library_stats":
+                    return await self._get_library_stats(client, arguments)
+                elif tool_name == "get_recently_played":
+                    return await self._get_recently_played(client, arguments)
+                elif tool_name == "search_library":
+                    return await self._search_library(client, arguments)
+                elif tool_name == "rate_song":
+                    return await self._rate_song(client, arguments)
+                elif tool_name == "create_playlist":
+                    return await self._create_playlist(client, arguments)
+                elif tool_name == "add_to_library":
+                    return await self._add_to_library(client, arguments)
+                else:
+                    raise ValueError(f"Unknown tool: {tool_name}")
+        except Exception as e:
+            print(f"ERROR: MCPHandler.handle_tool_call failed - {type(e).__name__}: {e}")
+            import traceback
+            print(f"ERROR: Full traceback:\n{traceback.format_exc()}")
+            raise
     
     async def _search_songs(self, client: AppleMusicClient, args: Dict[str, Any]) -> Dict[str, Any]:
         """Search Apple Music catalog for songs"""
+        # Debug: log what we received
+        print(f"DEBUG: search_songs received args: {args}")
+        
+        if "query" not in args:
+            raise ValueError(f"Missing required 'query' parameter. Received args: {args}")
+        
         query = args["query"]
         limit = args.get("limit", 10)
         
