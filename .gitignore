@@ -70,5 +70,8 @@ htmlcov/
 .tox/
 
 # Data directories
-data/
+data/*
+!data/.gitkeep
 cache/
+*.db
+*.sqlite

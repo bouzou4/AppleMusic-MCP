@@ -1,15 +1,25 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 import uvicorn
 import json
 import asyncio
 from typing import Dict, Any, Optional, Union, AsyncIterator
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
 from app.core.config import settings
+from app.core.database import init_db
 from app.services.mcp_handler import MCPHandler
+from app.api.endpoints import oauth
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Initialize database on startup
+    await init_db()
+    yield
 
 app = FastAPI(
     title="Apple Music MCP Server",
@@ -17,6 +27,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs" if settings.debug else None,
     redoc_url="/redoc" if settings.debug else None,
+    lifespan=lifespan
 )
 
 # Configure CORS
@@ -27,6 +38,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include OAuth router
+app.include_router(oauth.router)
+
+# Mount static files for MusicKit authentication
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 # Initialize MCP handler
 mcp_handler = MCPHandler()
@@ -93,9 +110,11 @@ async def mcp_endpoint(request: Request, mcp_request: Optional[MCPRequest] = Non
             except:
                 raise HTTPException(status_code=400, detail="Invalid JSON-RPC request")
         
-        return await handle_mcp_request(mcp_request)
+        # Extract authorization header for tool calls
+        authorization_header = request.headers.get("authorization")
+        return await handle_mcp_request(mcp_request, authorization_header)
 
-async def handle_mcp_request(mcp_request: MCPRequest) -> Dict[str, Any]:
+async def handle_mcp_request(mcp_request: MCPRequest, authorization_header: Optional[str] = None) -> Dict[str, Any]:
     """Handle MCP JSON-RPC requests"""
     try:
         if mcp_request.method == "initialize":
@@ -138,7 +157,8 @@ async def handle_mcp_request(mcp_request: MCPRequest) -> Dict[str, Any]:
             print(f"DEBUG: Calling tool '{tool_name}' with arguments: {arguments}")
             
             try:
-                result = await mcp_handler.handle_tool_call(tool_name, arguments)
+                # Pass authorization header for user token extraction
+                result = await mcp_handler.handle_tool_call(tool_name, arguments, authorization_header)
                 print(f"DEBUG: Tool call successful, result type: {type(result)}")
             except Exception as e:
                 print(f"ERROR: Tool call failed - {type(e).__name__}: {e}")
