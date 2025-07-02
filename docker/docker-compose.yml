@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  apple-music-mcp:
+    build: 
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: apple-music-mcp
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - APPLE_TEAM_ID=${APPLE_TEAM_ID}
+      - APPLE_KEY_ID=${APPLE_KEY_ID}
+      - APPLE_PRIVATE_KEY_PATH=/keys/AuthKey.p8
+      - DEBUG=false
+    volumes:
+      - ./keys:/keys:ro
+    networks:
+      - mcp_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  mcp_network:
+    driver: bridge
