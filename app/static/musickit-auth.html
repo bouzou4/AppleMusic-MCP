@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="origin" />
+    <title>Apple Music Authentication</title>
+    <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display",
+          "Segoe UI", Roboto, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .container {
+        background: rgba(255, 255, 255, 0.1);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 24px;
+        padding: 48px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+        max-width: 480px;
+        width: 100%;
+        text-align: center;
+      }
+
+      .logo {
+        font-size: 64px;
+        margin-bottom: 24px;
+        animation: float 3s ease-in-out infinite;
+      }
+
+      @keyframes float {
+        0%,
+        100% {
+          transform: translateY(0);
+        }
+        50% {
+          transform: translateY(-10px);
+        }
+      }
+
+      h1 {
+        font-size: 32px;
+        font-weight: 600;
+        margin-bottom: 12px;
+      }
+
+      .subtitle {
+        opacity: 0.9;
+        margin-bottom: 40px;
+        font-size: 17px;
+        line-height: 1.4;
+      }
+
+      .button {
+        background: linear-gradient(135deg, #ff416c, #ff4b2b);
+        border: none;
+        color: white;
+        padding: 16px 32px;
+        font-size: 17px;
+        font-weight: 500;
+        border-radius: 100px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(255, 65, 108, 0.3);
+        margin: 8px;
+        min-width: 220px;
+      }
+
+      .button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(255, 65, 108, 0.4);
+      }
+
+      .button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+        background: linear-gradient(135deg, #718096, #4a5568);
+        box-shadow: none;
+      }
+
+      .status {
+        margin: 24px 0;
+        padding: 16px 24px;
+        border-radius: 12px;
+        font-weight: 500;
+        font-size: 15px;
+        min-height: 56px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .status.loading {
+        background: rgba(52, 152, 219, 0.15);
+        border: 1px solid rgba(52, 152, 219, 0.3);
+      }
+
+      .status.success {
+        background: rgba(39, 174, 96, 0.15);
+        border: 1px solid rgba(39, 174, 96, 0.3);
+      }
+
+      .status.error {
+        background: rgba(231, 76, 60, 0.15);
+        border: 1px solid rgba(231, 76, 60, 0.3);
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: white;
+        animation: spin 0.8s linear infinite;
+        margin-right: 12px;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      @media (max-width: 480px) {
+        .container {
+          padding: 32px 24px;
+        }
+        h1 {
+          font-size: 28px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="logo">🎵</div>
+      <h1>Connect to Apple Music</h1>
+      <p class="subtitle">
+        Authorize Claude to access your Apple Music library
+      </p>
+
+      <div id="status" class="status loading">
+        <span class="spinner"></span>
+        <span>Initializing...</span>
+      </div>
+
+      <button id="authorizeBtn" class="button" disabled>
+        Connect Apple Music
+      </button>
+    </div>
+
+    <script>
+      // Get URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const authRequestId = urlParams.get("auth_request_id");
+      const developerToken = urlParams.get("developer_token");
+
+      // Elements
+      const statusEl = document.getElementById("status");
+      const authorizeBtn = document.getElementById("authorizeBtn");
+
+      // Global music instance
+      let music = null;
+
+      // Update status display
+      function updateStatus(message, type = "loading") {
+        statusEl.className = `status ${type}`;
+        if (type === "loading") {
+          statusEl.innerHTML = `<span class="spinner"></span><span>${message}</span>`;
+        } else {
+          statusEl.innerHTML = `<span>${message}</span>`;
+        }
+      }
+
+      // Wait for MusicKit instance with retry
+      async function waitForMusicKitInstance(maxAttempts = 20) {
+        for (let i = 0; i < maxAttempts; i++) {
+          try {
+            const instance = MusicKit.getInstance();
+            if (instance) {
+              console.log(`Got MusicKit instance on attempt ${i + 1}`);
+              return instance;
+            }
+          } catch (e) {
+            // Ignore errors, just keep trying
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        throw new Error(
+          "MusicKit instance not available after " + maxAttempts + " attempts"
+        );
+      }
+
+      // Initialize MusicKit
+      async function initializeMusicKit() {
+        if (!authRequestId || !developerToken) {
+          updateStatus("❌ Missing authentication parameters", "error");
+          return;
+        }
+
+        try {
+          // Configure MusicKit
+          MusicKit.configure({
+            developerToken: developerToken,
+            app: {
+              name: "Apple Music MCP Server",
+              build: "1.0.0",
+            },
+          });
+
+          console.log("MusicKit configured, waiting for instance...");
+          updateStatus("Preparing Apple Music...", "loading");
+
+          // Wait for instance to be available
+          music = await waitForMusicKitInstance();
+
+          // Check if already authorized
+          if (music.isAuthorized) {
+            updateStatus("✅ Already connected! Click to continue.", "success");
+            authorizeBtn.textContent = "Continue";
+          } else {
+            updateStatus("Ready to connect", "success");
+          }
+
+          authorizeBtn.disabled = false;
+        } catch (error) {
+          console.error("MusicKit initialization error:", error);
+          updateStatus(`❌ ${error.message}`, "error");
+        }
+      }
+
+      // Handle authorization
+      async function handleAuthorization() {
+        if (!music) return;
+
+        try {
+          authorizeBtn.disabled = true;
+          updateStatus("Connecting to Apple Music...", "loading");
+
+          // Get user token
+          const userToken = await music.authorize();
+
+          if (!userToken) {
+            throw new Error("No user token received");
+          }
+
+          console.log(
+            "User token received:",
+            userToken.substring(0, 20) + "..."
+          );
+          updateStatus("Completing setup...", "loading");
+
+          // Send token to server
+          const response = await fetch("/oauth/musickit/callback", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              auth_request_id: authRequestId,
+              user_token: userToken,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+          }
+
+          const result = await response.json();
+          updateStatus("🎉 Success! Redirecting...", "success");
+
+          // Redirect after a short delay
+          if (result.redirect_url) {
+            setTimeout(() => {
+              window.location.href = result.redirect_url;
+            }, 1500);
+          } else {
+            updateStatus("✅ Complete! You can close this window.", "success");
+          }
+        } catch (error) {
+          console.error("Authorization error:", error);
+
+          let message = "Authorization failed";
+          if (error.message.includes("popup")) {
+            message = "Pop-up blocked. Please allow pop-ups and try again.";
+          } else if (error.message.includes("cancel")) {
+            message = "Authorization cancelled.";
+          } else if (error.message.includes("Server error")) {
+            message = error.message;
+          }
+
+          updateStatus(`❌ ${message}`, "error");
+          authorizeBtn.disabled = false;
+          authorizeBtn.textContent = "Try Again";
+        }
+      }
+
+      // Event listeners
+      authorizeBtn.addEventListener("click", handleAuthorization);
+
+      // Wait for MusicKit to load
+      document.addEventListener("musickitloaded", () => {
+        console.log("MusicKit loaded");
+        initializeMusicKit();
+      });
+
+      // Timeout if MusicKit doesn't load
+      setTimeout(() => {
+        if (!window.MusicKit) {
+          updateStatus("❌ MusicKit failed to load. Please refresh.", "error");
+        }
+      }, 10000);
+    </script>
+  </body>
+</html>

@@ -1,11 +1,36 @@
 from typing import Dict, List, Any, Optional
+import jwt
 from app.services.apple_music import AppleMusicClient
+from app.core.config import settings
+from app.core.security import decrypt_token
 
 class MCPHandler:
     """Handle MCP protocol requests and route to Apple Music API"""
     
     def __init__(self):
         self.apple_client = AppleMusicClient()
+    
+    def _extract_user_token(self, authorization_header: Optional[str]) -> Optional[str]:
+        """Extract MusicKit user token from OAuth Bearer token"""
+        if not authorization_header or not authorization_header.startswith("Bearer "):
+            return None
+        
+        try:
+            access_token = authorization_header[7:]  # Remove "Bearer " prefix
+            payload = jwt.decode(
+                access_token, 
+                settings.jwt_secret_key, 
+                algorithms=["HS256"]
+            )
+            
+            encrypted_user_token = payload.get("apple_user_token")
+            if encrypted_user_token:
+                return decrypt_token(encrypted_user_token)
+            
+        except (jwt.InvalidTokenError, Exception) as e:
+            print(f"DEBUG: Failed to extract user token: {e}")
+        
+        return None
     
     async def get_tools(self) -> List[Dict[str, Any]]:
         """Return available MCP tools"""
@@ -91,12 +116,22 @@ class MCPHandler:
             }
         ]
     
-    async def handle_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def handle_tool_call(self, tool_name: str, arguments: Dict[str, Any], authorization_header: Optional[str] = None) -> Dict[str, Any]:
         """Handle MCP tool calls"""
         print(f"DEBUG: MCPHandler.handle_tool_call - tool: {tool_name}, args: {arguments}")
         
+        # Extract user token from OAuth access token if provided
+        user_token = self._extract_user_token(authorization_header)
+        
+        apple_client = AppleMusicClient()
+        if user_token:
+            print(f"DEBUG: Extracted user token from OAuth access token")
+            apple_client.user_token = user_token
+        else:
+            print(f"DEBUG: No user token found, using catalog-only access")
+        
         try:
-            async with self.apple_client as client:
+            async with apple_client as client:
                 print(f"DEBUG: Apple Music client context established")
                 if tool_name == "search_songs":
                     return await self._search_songs(client, arguments)
