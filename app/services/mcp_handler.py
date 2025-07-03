@@ -1,5 +1,6 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 import jwt
+import asyncio
 from app.services.apple_music import AppleMusicClient
 from app.core.config import settings
 from app.core.security import decrypt_token
@@ -113,6 +114,130 @@ class MCPHandler:
                     },
                     "required": ["song_ids"]
                 }
+            },
+            {
+                "name": "batch_add_to_playlist",
+                "description": "Add multiple songs to a playlist in a single operation. Accepts song names, IDs, or a mix. Automatically searches for songs if names provided.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "playlist_identifier": {
+                            "type": "string",
+                            "description": "Playlist name or ID. If name provided, will search user's playlists"
+                        },
+                        "songs": {
+                            "type": "array",
+                            "description": "List of songs to add. Each item can be a song ID, or an object with title/artist",
+                            "items": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {
+                                        "type": "object",
+                                        "properties": {
+                                            "title": {"type": "string"},
+                                            "artist": {"type": "string"},
+                                            "album": {"type": "string"}
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        "create_if_missing": {
+                            "type": "boolean",
+                            "description": "Create playlist if it doesn't exist",
+                            "default": False
+                        },
+                        "deduplicate": {
+                            "type": "boolean", 
+                            "description": "Skip songs already in playlist",
+                            "default": True
+                        }
+                    },
+                    "required": ["playlist_identifier", "songs"]
+                }
+            },
+            {
+                "name": "bulk_playlist_operations",
+                "description": "Create playlists with initial songs or perform bulk operations on existing playlists",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "operations": {
+                            "type": "array",
+                            "description": "List of playlist operations to perform",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "operation": {
+                                        "type": "string",
+                                        "enum": ["create", "merge", "duplicate", "clear", "reorder"]
+                                    },
+                                    "playlist_name": {"type": "string"},
+                                    "songs": {
+                                        "type": "array",
+                                        "description": "Songs for create/merge operations"
+                                    },
+                                    "source_playlists": {
+                                        "type": "array",
+                                        "description": "Source playlists for merge operations"
+                                    },
+                                    "order_by": {
+                                        "type": "string",
+                                        "enum": ["title", "artist", "date_added"],
+                                        "description": "For reorder operations"
+                                    }
+                                }
+                            }
+                        },
+                        "batch_mode": {
+                            "type": "string",
+                            "enum": ["sequential", "parallel"],
+                            "default": "parallel"
+                        }
+                    },
+                    "required": ["operations"]
+                }
+            },
+            {
+                "name": "efficient_library_search",
+                "description": "Search user's library and Apple Music catalog efficiently, returning IDs optimized for other tools",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "description": "Multiple search queries to process",
+                            "items": {"type": "string"}
+                        },
+                        "search_scope": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["library", "catalog", "both"]
+                            },
+                            "default": ["both"]
+                        },
+                        "types": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["songs", "albums", "artists", "playlists"]
+                            },
+                            "default": ["songs"]
+                        },
+                        "return_format": {
+                            "type": "string",
+                            "enum": ["ids_only", "minimal", "full"],
+                            "description": "Control response verbosity",
+                            "default": "minimal"
+                        },
+                        "limit_per_query": {
+                            "type": "integer",
+                            "default": 10
+                        }
+                    },
+                    "required": ["queries"]
+                }
             }
         ]
     
@@ -147,6 +272,12 @@ class MCPHandler:
                     return await self._create_playlist(client, arguments)
                 elif tool_name == "add_to_library":
                     return await self._add_to_library(client, arguments)
+                elif tool_name == "batch_add_to_playlist":
+                    return await self._batch_add_to_playlist(client, arguments)
+                elif tool_name == "bulk_playlist_operations":
+                    return await self._bulk_playlist_operations(client, arguments)
+                elif tool_name == "efficient_library_search":
+                    return await self._efficient_library_search(client, arguments)
                 else:
                     raise ValueError(f"Unknown tool: {tool_name}")
         except Exception as e:
@@ -226,3 +357,286 @@ class MCPHandler:
         
         result = await client.add_to_library(song_ids)
         return {"status": "success", "added_songs": len(song_ids)}
+    
+    async def _batch_add_to_playlist(self, client: AppleMusicClient, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Add multiple songs to playlist with minimal API calls"""
+        playlist_identifier = args["playlist_identifier"]
+        songs = args["songs"]
+        create_if_missing = args.get("create_if_missing", False)
+        deduplicate = args.get("deduplicate", True)
+        
+        results = {
+            "status": "success",
+            "summary": {"total": len(songs), "successful": 0, "failed": 0},
+            "errors": []
+        }
+        
+        # Step 1: Resolve playlist
+        playlist_id = None
+        if playlist_identifier.startswith("p."):  # Apple Music library playlist ID format
+            playlist_id = playlist_identifier
+        else:
+            # Search for playlist by name
+            playlists = await client.get_library_playlists(limit=100)
+            for pl in playlists.get("data", []):
+                if pl["attributes"]["name"].lower() == playlist_identifier.lower():
+                    playlist_id = pl["id"]
+                    break
+            
+            if not playlist_id and create_if_missing:
+                result = await client.create_playlist(playlist_identifier)
+                playlist_id = result["data"][0]["id"]
+        
+        if not playlist_id:
+            results["status"] = "error"
+            results["errors"].append(f"Playlist '{playlist_identifier}' not found")
+            return results
+        
+        # Step 2: Prepare songs for addition
+        songs_to_search = []
+        track_data = []
+        
+        for song in songs:
+            if isinstance(song, str):
+                # Assume it's a catalog ID
+                track_data.append({"id": song, "type": "songs"})
+                results["summary"]["successful"] += 1
+            else:
+                # Need to search for this song
+                songs_to_search.append(song)
+        
+        # Step 3: Batch search for non-ID songs
+        if songs_to_search:
+            # Create efficient search queries
+            for song_info in songs_to_search:
+                query_parts = []
+                if song_info.get("artist"):
+                    query_parts.append(song_info["artist"])
+                if song_info.get("title"):
+                    query_parts.append(song_info["title"])
+                
+                if query_parts:
+                    query = " ".join(query_parts)
+                    search_results = await client.search_catalog(query, types="songs", limit=5)
+                    
+                    # Find best match
+                    songs_data = search_results.get("results", {}).get("songs", {}).get("data", [])
+                    if songs_data:
+                        # Simple matching - take first result
+                        track_data.append({"id": songs_data[0]["id"], "type": "songs"})
+                        results["summary"]["successful"] += 1
+                    else:
+                        results["errors"].append(f"Song not found: {query}")
+                        results["summary"]["failed"] += 1
+        
+        # Step 4: Deduplicate if requested
+        if deduplicate:
+            try:
+                existing_tracks = await client.get_playlist_tracks(playlist_id)
+                existing_ids = {t.get("attributes", {}).get("playParams", {}).get("catalogId") 
+                               for t in existing_tracks if t.get("attributes", {}).get("playParams", {}).get("catalogId")}
+                
+                track_data = [t for t in track_data if t["id"] not in existing_ids]
+            except Exception as e:
+                # If deduplication fails, continue without it
+                print(f"DEBUG: Deduplication failed, continuing without it: {e}")
+                pass
+        
+        # Step 5: Add tracks to playlist
+        if track_data:
+            await client.add_tracks_to_playlist(playlist_id, track_data)
+            results["summary"]["added"] = len(track_data)
+        
+        results["playlist_id"] = playlist_id
+        return results
+
+    async def _bulk_playlist_operations(self, client: AppleMusicClient, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute bulk playlist operations"""
+        operations = args["operations"]
+        batch_mode = args.get("batch_mode", "parallel")
+        
+        results = {
+            "status": "success",
+            "operations": [],
+            "summary": {"total": len(operations), "successful": 0, "failed": 0}
+        }
+        
+        # Process operations
+        if batch_mode == "parallel":
+            # Use asyncio.gather for parallel execution
+            operation_results = await asyncio.gather(
+                *[self._execute_playlist_operation(client, op) for op in operations],
+                return_exceptions=True
+            )
+        else:
+            # Sequential execution
+            operation_results = []
+            for op in operations:
+                result = await self._execute_playlist_operation(client, op)
+                operation_results.append(result)
+        
+        # Process results
+        for i, result in enumerate(operation_results):
+            if isinstance(result, Exception):
+                results["operations"].append({
+                    "operation": operations[i],
+                    "status": "error",
+                    "error": str(result)
+                })
+                results["summary"]["failed"] += 1
+            else:
+                results["operations"].append(result)
+                if result["status"] == "success":
+                    results["summary"]["successful"] += 1
+                else:
+                    results["summary"]["failed"] += 1
+        
+        return results
+
+    async def _execute_playlist_operation(self, client: AppleMusicClient, operation: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a single playlist operation"""
+        op_type = operation["operation"]
+        
+        try:
+            if op_type == "create":
+                # Create playlist with initial songs
+                name = operation["playlist_name"]
+                songs = operation.get("songs", [])
+                
+                # First create the playlist
+                playlist_result = await client.create_playlist(name)
+                playlist_id = playlist_result["data"][0]["id"]
+                
+                # Then add songs if provided
+                if songs:
+                    # Convert songs to track data using batch_add logic
+                    track_data = []
+                    for song in songs:
+                        if isinstance(song, str):
+                            track_data.append({"id": song, "type": "songs"})
+                        else:
+                            # Search for song
+                            query_parts = []
+                            if song.get("artist"):
+                                query_parts.append(song["artist"])
+                            if song.get("title"):
+                                query_parts.append(song["title"])
+                            
+                            if query_parts:
+                                query = " ".join(query_parts)
+                                search_results = await client.search_catalog(query, types="songs", limit=1)
+                                songs_data = search_results.get("results", {}).get("songs", {}).get("data", [])
+                                if songs_data:
+                                    track_data.append({"id": songs_data[0]["id"], "type": "songs"})
+                    
+                    if track_data:
+                        await client.add_tracks_to_playlist(playlist_id, track_data)
+                
+                return {"status": "success", "operation": op_type, "playlist_id": playlist_id, "songs_added": len(track_data) if songs else 0}
+                
+            elif op_type == "clear":
+                # Clear all tracks from playlist
+                playlist_name = operation["playlist_name"]
+                
+                # Find playlist ID by name
+                playlists = await client.get_library_playlists(limit=100)
+                playlist_id = None
+                for pl in playlists.get("data", []):
+                    if pl["attributes"]["name"].lower() == playlist_name.lower():
+                        playlist_id = pl["id"]
+                        break
+                
+                if not playlist_id:
+                    return {"status": "error", "operation": op_type, "error": f"Playlist '{playlist_name}' not found"}
+                
+                # Get all tracks and delete them
+                tracks = await client.get_playlist_tracks(playlist_id)
+                if tracks:
+                    track_indices = list(range(len(tracks)))
+                    await client.delete_playlist_tracks(playlist_id, track_indices)
+                
+                return {"status": "success", "operation": op_type, "playlist_id": playlist_id, "tracks_removed": len(tracks)}
+                
+            else:
+                return {"status": "error", "operation": op_type, "error": f"Operation '{op_type}' not yet implemented"}
+                
+        except Exception as e:
+            return {"status": "error", "operation": op_type, "error": str(e)}
+
+    async def _efficient_library_search(self, client: AppleMusicClient, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Efficient multi-query search"""
+        queries = args["queries"]
+        search_scope = args.get("search_scope", ["both"])
+        types = args.get("types", ["songs"])
+        return_format = args.get("return_format", "minimal")
+        limit = args.get("limit_per_query", 10)
+        
+        results = {
+            "status": "success",
+            "queries": {},
+            "summary": {"total_queries": len(queries), "total_results": 0}
+        }
+        
+        for query in queries:
+            query_results = {"library": [], "catalog": []}
+            
+            # Execute searches based on scope
+            search_tasks = []
+            
+            if "library" in search_scope or "both" in search_scope:
+                for type_name in types:
+                    search_tasks.append(("library", type_name, 
+                        client.search_library(query, types=f"library-{type_name}", limit=limit)))
+            
+            if "catalog" in search_scope or "both" in search_scope:
+                for type_name in types:
+                    search_tasks.append(("catalog", type_name,
+                        client.search_catalog(query, types=type_name, limit=limit)))
+            
+            # Execute all searches for this query in parallel
+            search_results = await asyncio.gather(*[task[2] for task in search_tasks], return_exceptions=True)
+            
+            # Process results based on return_format
+            for i, result in enumerate(search_results):
+                if isinstance(result, Exception):
+                    continue
+                    
+                scope, type_name = search_tasks[i][0], search_tasks[i][1]
+                
+                if return_format == "ids_only":
+                    # Extract just IDs
+                    items = result.get("results", {}).get(type_name, {}).get("data", [])
+                    ids = [item["id"] for item in items]
+                    query_results[scope].extend(ids)
+                    
+                elif return_format == "minimal":
+                    # Extract ID, name, and key attributes
+                    items = result.get("results", {}).get(type_name, {}).get("data", [])
+                    minimal_items = []
+                    
+                    for item in items:
+                        attrs = item.get("attributes", {})
+                        minimal_item = {
+                            "id": item["id"],
+                            "name": attrs.get("name"),
+                            "type": type_name
+                        }
+                        
+                        # Add type-specific attributes
+                        if type_name == "songs":
+                            minimal_item["artist"] = attrs.get("artistName")
+                            minimal_item["catalog_id"] = attrs.get("playParams", {}).get("catalogId")
+                            minimal_item["isrc"] = attrs.get("isrc")
+                        
+                        minimal_items.append(minimal_item)
+                        
+                    query_results[scope].extend(minimal_items)
+                    
+                else:  # full
+                    items = result.get("results", {}).get(type_name, {}).get("data", [])
+                    query_results[scope].extend(items)
+            
+            results["queries"][query] = query_results
+            results["summary"]["total_results"] += len(query_results["library"]) + len(query_results["catalog"])
+        
+        return results

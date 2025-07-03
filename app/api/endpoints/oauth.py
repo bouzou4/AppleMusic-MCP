@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, Depends, Query, Form
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, HTTPException, Depends, Query, Form, Request
+from fastapi.responses import RedirectResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -19,6 +19,25 @@ from app.core.security import encrypt_token, decrypt_token
 from app.models.oauth import OAuth2Client, AuthorizationRequest, AuthorizationCodeGrant, AccessToken
 
 router = APIRouter()
+
+# Add OPTIONS handlers for CORS preflight requests
+@router.options("/.well-known/oauth-authorization-server")
+@router.options("/.well-known/oauth-protected-resource")
+@router.options("/oauth/register")
+@router.options("/oauth/authorize")
+@router.options("/oauth/token")
+@router.options("/{path:path}")
+async def options_handler(request: Request):
+    """Handle OPTIONS requests for CORS preflight"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600"
+        }
+    )
 
 # Pydantic models for OAuth requests/responses
 class ClientRegistrationRequest(BaseModel):
@@ -70,6 +89,26 @@ async def oauth_metadata():
         "token_endpoint_auth_methods_supported": ["none"],
         "token_endpoint_auth_method": "none",
         "require_pushed_authorization_requests": False
+    }
+
+@router.get("/.well-known/oauth-protected-resource")
+async def oauth_protected_resource_metadata():
+    """
+    OAuth 2.0 Protected Resource Metadata (RFC 8705)
+    Used by MCP Inspector for resource server discovery
+    """
+    return {
+        "resource_server": settings.oauth_base_url,
+        "authorization_servers": [settings.oauth_base_url],
+        "scopes_supported": [
+            "library:read",
+            "library:write", 
+            "playlists:read",
+            "playlists:write",
+            "recently-played:read"
+        ],
+        "bearer_methods_supported": ["header"],
+        "resource_documentation": f"{settings.oauth_base_url}/docs"
     }
 
 @router.post("/oauth/register", response_model=ClientRegistrationResponse)

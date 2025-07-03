@@ -11,6 +11,7 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 - **Song ratings** - Rate tracks (1-5 stars)
 - **Playlist creation** - Create and manage playlists
 - **Add to library** - Add songs from catalog to user library
+- **Batch operations** - Efficient bulk playlist and search operations
 
 ## Architecture
 
@@ -22,6 +23,7 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 
 ## MCP Tools Available
 
+### Core Tools
 - `search_songs` - Search Apple Music catalog for tracks
 - `get_library_stats` - Get user's library statistics
 - `get_recently_played` - Fetch recently played tracks
@@ -29,6 +31,11 @@ This server enables MCP-compatible LLMs to read and write Apple Music library da
 - `rate_song` - Rate a song (1-5 stars)
 - `create_playlist` - Create new playlists
 - `add_to_library` - Add songs to user's library
+
+### Batch Operations
+- `batch_add_to_playlist` - Add multiple songs to a playlist efficiently
+- `bulk_playlist_operations` - Perform multiple playlist operations in parallel
+- `efficient_library_search` - Search multiple queries simultaneously with optimized output formats
 
 ## Quick Start
 
@@ -131,6 +138,68 @@ Claude: Uses get_library_stats tool → Returns library statistics
 
 User: "Rate this song 5 stars"
 Claude: Uses rate_song tool → Updates song rating in Apple Music
+
+User: "Add these 20 songs to my workout playlist"
+Claude: Uses batch_add_to_playlist  → Performs efficiently in parallel
+```
+
+## Batch Operations Features
+
+### Performance Optimizations
+- **Parallel Processing**: Multiple operations execute simultaneously using asyncio.gather()
+- **Reduced API Calls**: Batch requests minimize round trips to Apple Music API
+- **Smart Deduplication**: Automatically prevents adding duplicate tracks to playlists
+- **Mixed Input Support**: Handle both Apple Music IDs and artist/title search objects
+- **Configurable Output Formats**: Choose between ids_only, minimal, or full response formats
+
+### batch_add_to_playlist
+Efficiently add multiple songs to a playlist with automatic song resolution:
+```python
+{
+  "playlist_identifier": "My Workout Playlist",  # Name or ID
+  "songs": [
+    "1468058171",  # Apple Music ID
+    {"title": "Blinding Lights", "artist": "The Weeknd"},  # Search object
+    {"title": "Watermelon Sugar", "artist": "Harry Styles"}
+  ],
+  "create_if_missing": true,  # Create playlist if it doesn't exist
+  "deduplicate": true  # Skip songs already in playlist
+}
+```
+
+### bulk_playlist_operations
+Perform multiple playlist operations in parallel:
+```python
+{
+  "operations": [
+    {
+      "operation": "create",
+      "playlist_name": "New Playlist 1",
+      "songs": ["1468058171", "1193701400"]
+    },
+    {
+      "operation": "create", 
+      "playlist_name": "New Playlist 2"
+    },
+    {
+      "operation": "clear",
+      "playlist_name": "Old Playlist"
+    }
+  ],
+  "batch_mode": "parallel"  # or "sequential"
+}
+```
+
+### efficient_library_search
+Search multiple queries simultaneously with optimized responses:
+```python
+{
+  "queries": ["Taylor Swift", "Ed Sheeran", "Billie Eilish"],
+  "search_scope": ["catalog"],  # "library", "catalog", or "both"
+  "types": ["songs"],  # "songs", "albums", "artists", "playlists"
+  "return_format": "minimal",  # "ids_only", "minimal", or "full"
+  "limit_per_query": 5
+}
 ```
 
 ## Status
@@ -140,7 +209,7 @@ Claude: Uses rate_song tool → Updates song rating in Apple Music
 - ✅ Apple Music API client with JWT authentication  
 - ✅ OAuth 2.1 server with dynamic client registration
 - ✅ MusicKit authentication integration
-- ✅ All 7 MCP tools implemented and tested
+- ✅ All 10 MCP tools implemented and tested (7 core + 3 batch operations)
 - ✅ Authorization header extraction and user token handling
 - ✅ Docker deployment with environment configuration
 - ✅ HTTP client lifecycle management
@@ -151,6 +220,7 @@ Claude: Uses rate_song tool → Updates song rating in Apple Music
 - MusicKit user authentication via web interface  
 - Bearer token extraction for authenticated operations
 - Library operations (requires user authentication)
+- Batch operations with parallel processing and optimized API usage
 
 ## Security
 

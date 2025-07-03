@@ -15,13 +15,16 @@ class AppleMusicClient:
         self.developer_token: Optional[str] = None
         self.token_expires: Optional[datetime] = None
         self.user_token: Optional[str] = None
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client: Optional[httpx.AsyncClient] = None
     
     async def __aenter__(self):
+        self.client = httpx.AsyncClient(timeout=30.0)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.client.aclose()
+        if self.client:
+            await self.client.aclose()
+            self.client = None
     
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers with authentication"""
@@ -72,7 +75,18 @@ class AppleMusicClient:
             return await self._make_request(method, endpoint, params, json_data)
         
         response.raise_for_status()
-        return response.json()
+        
+        # Handle empty responses
+        if response.content:
+            try:
+                return response.json()
+            except ValueError as e:
+                print(f"DEBUG: Failed to parse JSON response: {e}")
+                print(f"DEBUG: Response content: {response.text}")
+                raise
+        else:
+            # Return empty dict for successful requests with no content
+            return {}
     
     # Catalog Search (for finding song IDs)
     async def search_catalog(
@@ -198,3 +212,96 @@ class AppleMusicClient:
             "data": [{"id": song_id, "type": "songs"} for song_id in song_ids]
         }
         return await self._make_request("POST", "/me/library", json_data=json_data)
+    
+    # Batch Operations Methods
+    async def get_playlist_tracks(self, playlist_id: str, limit: int = 300) -> List[Dict[str, Any]]:
+        """Get all tracks from a playlist with pagination"""
+        all_tracks = []
+        offset = 0
+        
+        try:
+            while True:
+                response = await self._make_request(
+                    "GET", 
+                    f"/me/library/playlists/{playlist_id}/tracks",
+                    params={"limit": limit, "offset": offset}
+                )
+                
+                tracks = response.get("data", [])
+                all_tracks.extend(tracks)
+                
+                # Check for next page
+                if not response.get("next") or len(tracks) < limit:
+                    break
+                offset += limit
+        except Exception as e:
+            # If playlist is empty or newly created, return empty list
+            print(f"DEBUG: get_playlist_tracks failed for {playlist_id}: {e}")
+            return []
+        
+        return all_tracks
+
+    async def add_tracks_to_playlist(self, playlist_id: str, track_data: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Add tracks to playlist. track_data should have 'id' and 'type' for each track"""
+        # Apple Music API limits to 100 tracks per request
+        for i in range(0, len(track_data), 100):
+            batch = track_data[i:i+100]
+            json_data = {"data": batch}
+            
+            await self._make_request(
+                "POST",
+                f"/me/library/playlists/{playlist_id}/tracks",
+                json_data=json_data
+            )
+        
+        return {"added": len(track_data)}
+
+    async def delete_playlist_tracks(self, playlist_id: str, track_indices: List[int]) -> Dict[str, Any]:
+        """Delete tracks from playlist by their indices"""
+        # Apple Music uses track indices for deletion
+        json_data = {"data": [{"id": str(idx), "type": "library-playlist-tracks"} for idx in track_indices]}
+        
+        return await self._make_request(
+            "DELETE",
+            f"/me/library/playlists/{playlist_id}/tracks",
+            json_data=json_data
+        )
+
+    async def update_playlist_tracks(self, playlist_id: str, track_data: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Replace all tracks in a playlist (for reordering)"""
+        json_data = {"data": track_data}
+        
+        return await self._make_request(
+            "PUT",
+            f"/me/library/playlists/{playlist_id}/tracks",
+            json_data=json_data
+        )
+
+    async def parallel_search(self, queries: List[str], search_type: str, types: str, limit: int) -> List[Dict[str, Any]]:
+        """Execute multiple searches in parallel"""
+        if search_type == "catalog":
+            search_tasks = [self.search_catalog(q, types=types, limit=limit) for q in queries]
+        else:  # library
+            search_tasks = [self.search_library(q, types=f"library-{types}", limit=limit) for q in queries]
+        
+        results = await asyncio.gather(*search_tasks, return_exceptions=True)
+        return results
+
+    async def get_artist_top_songs(self, artist_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get top songs for an artist"""
+        # Note: Apple Music doesn't have direct "top songs" relationship in the API
+        # We'll search for the artist and get their songs
+        response = await self._make_request(
+            "GET",
+            f"/catalog/us/artists/{artist_id}/songs",
+            params={"limit": limit}
+        )
+        return response.get("data", [])
+
+    async def get_charts(self, types: str = "songs", genre: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+        """Get music charts, optionally filtered by genre"""
+        params = {"types": types, "limit": limit}
+        if genre:
+            params["genre"] = genre
+        
+        return await self._make_request("GET", "/catalog/us/charts", params=params)
